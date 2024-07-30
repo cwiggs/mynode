@@ -201,19 +201,8 @@ sed -i 's/rockpi4-b/mynode/g' /etc/hosts
 # Update sources
 apt-get -y update --allow-releaseinfo-change
 
-# Add sources
-apt-get -y install apt-transport-https curl gnupg ca-certificates
-# Tor (arm32 support was dropped)
-if [ $IS_64_BIT = 1 ]; then
-    grep -qxF "deb https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" /etc/apt/sources.list  || echo "deb https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" >> /etc/apt/sources.list
-    grep -qxF "deb-src https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" /etc/apt/sources.list  || echo "deb-src https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" >> /etc/apt/sources.list
-fi
-if [ "$DEBIAN_VERSION" = "buster" ]; then
-    # Migrate old buster backports to archive
-    sed -i 's|deb.debian.org/debian buster-backports|archive.debian.org/debian buster-backports|g' /etc/apt/sources.list
-    # Add backports repo
-    grep -qxF "deb http://archive.debian.org/debian buster-backports main" /etc/apt/sources.list  || echo "deb http://archive.debian.org/debian buster-backports main" >> /etc/apt/sources.list
-fi
+install_tor
+
 # Add I2P Repo
 /bin/bash $TMP_INSTALL_PATH/usr/share/mynode/scripts/add_i2p_repo.sh
 
@@ -229,7 +218,6 @@ gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys DE23E73BFA8A0AD5587D2FCDE
 gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys 9FC6B0BFD597A94DBF09708280E5375C094198D8 # Loop (bhandras)
 gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 26984CB69EB8C4A26196F7A4D7D916376026F177 # Lightning Terminal
 gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 187F6ADD93AE3B0CF335AA6AB984570980684DCC # Lightning Terminal
-wget -q https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc -O- | apt-key add - # Tor
 gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys 648ACFD622F3D138     # Debian Backports
 gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys 0E98404D386FA1D9     # Debian Backports
 apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 74A941BA219EC810   # Tor
@@ -256,14 +244,14 @@ apt-get -y install build-essential python3-dev python3-pip python3-grpcio
 apt-get -y install transmission-cli fail2ban ufw tclsh redis-server
 apt-get -y install clang hitch zlib1g-dev libffi-dev file toilet ncdu
 apt-get -y install toilet-fonts avahi-daemon figlet libsecp256k1-dev
-apt-get -y install inotify-tools libssl-dev tor tmux screen fonts-dejavu
+apt-get -y install inotify-tools libssl-dev tmux screen fonts-dejavu
 apt-get -y install pv sysstat network-manager rsync parted unzip pkg-config
 apt-get -y install libfreetype6-dev libpng-dev libatlas-base-dev libgmp-dev libltdl-dev
 apt-get -y install libffi-dev libssl-dev python3-bottle automake libtool libltdl7
 apt -y -qq install apt-transport-https ca-certificates
 apt-get -y install libevent-dev ncurses-dev
 apt-get -y install zlib1g-dev libudev-dev libusb-1.0-0-dev python3-venv gunicorn
-apt-get -y install sqlite3 libsqlite3-dev torsocks python3-requests libsystemd-dev
+apt-get -y install sqlite3 libsqlite3-dev python3-requests libsystemd-dev
 apt-get -y install libjpeg-dev zlib1g-dev psmisc hexyl libbz2-dev liblzma-dev netcat-openbsd
 apt-get -y install hdparm iotop nut obfs4proxy libpq-dev socat btrfs-progs i2pd apparmor pass
 apt-get -y install gdisk xxd
@@ -320,9 +308,6 @@ dpkg --configure -a
 
 # Cleanup apt-get cache to save some space
 apt-get clean
-
-# Update users
-usermod -a -G debian-tor bitcoin
 
 # Make admin a member of bitcoin
 adduser admin bitcoin
@@ -1122,3 +1107,79 @@ echo ""
 ### MAKE IMAGE NOW ###
 # This prevents auto gen files like certs to be part of the base image
 # Must make sure image can boot after this point and fully come up
+
+# Functions
+#############################################
+install_tor() {
+    # Install apt-transport-https so we can use https apt sources.
+    # Install gpg so we can import the Tor Project's GPG key.
+    # ca-certificates is used for older systems.
+    if apt-get install --yes apt-transport-https gnupg ca-certificates ; then
+        echo "apt-transport-https installed"
+    else
+        echo "apt-transport-https failed to install"
+        exit 1
+    fi
+    
+    
+    # Add official Tor repository to the apt sources.
+    if mkdir -p /etc/apt/sources.list.d/tor.list; then
+        echo "Created /etc/apt/sources.list.d/tor.list"
+    else
+        echo "Failed to create /etc/apt/sources.list.d/tor.list"
+        exit 1
+    fi
+    
+    if [ "$DEBIAN_VERSION" = "bookworm" ]; then
+        # Only echo to the file if it doesn't exist.
+        if [ ! -f /etc/apt/sources.list.d/tor.list ]; then
+            echo "deb [signed-by=/usr/share/keyrings/deb.torproject.org-keyring.gpg] https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" > /etc/apt/sources.list.d/tor.list
+        fi
+
+        # Add the Tor Project's GPG key to the apt keyring.
+        if wget -qO- https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc | gpg --dearmor | tee /usr/share/keyrings/deb.torproject.org-keyring.gpg &>/dev/null; then
+            echo "Added Tor Project's GPG key to the apt keyring"
+        else
+            echo "Failed to add Tor Project's GPG key to the apt keyring"
+            exit 1
+        fi
+    else
+        # Tor (arm32 support was dropped)
+        if [ $IS_64_BIT = 1 ]; then
+            # This is the deprecated way to add apt keys.  Not sure if it can be converted to the new way though.
+            wget -q https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc -O- | apt-key add - # Tor
+            grep -qxF "deb https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" /etc/apt/sources.list  || echo "deb https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" >> /etc/apt/sources.list
+            grep -qxF "deb-src https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" /etc/apt/sources.list  || echo "deb-src https://deb.torproject.org/torproject.org ${DEBIAN_VERSION} main" >> /etc/apt/sources.list
+        fi
+        if [ "$DEBIAN_VERSION" = "buster" ]; then
+            # Migrate old buster backports to archive
+            sed -i 's|deb.debian.org/debian buster-backports|archive.debian.org/debian buster-backports|g' /etc/apt/sources.list
+            # Add backports repo
+            grep -qxF "deb http://archive.debian.org/debian buster-backports main" /etc/apt/sources.list  || echo "deb http://archive.debian.org/debian buster-backports main" >> /etc/apt/sources.list
+        fi
+    fi
+
+    # Update the apt cache.
+    if apt-get update ; then
+        echo "Apt cache updated"
+    else
+        echo "Failed to update apt cache"
+        exit 1
+    fi
+
+    # Install tor
+    if apt-get install --yes tor torsocks ; then
+        echo "Tor installed"
+    else
+        echo "Tor failed to install"
+        exit 1
+    fi
+
+    # Add main user to debian-tor group so it can control tor.
+    if usermod -a -G debian-tor bitcoin ; then
+        echo "Added bitcoin user to debian-tor group"
+    else
+        echo "Failed to add bitcoin user to debian-tor group"
+        exit 1
+    fi
+}
